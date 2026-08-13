@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zetapi"
+dynamic = ["version"]
+description = "Zeta (zeta-ai.io / ScatterLab) の非公式 Python API ラッパー"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "amane1201" }]
+keywords = [
+    "zeta",
+    "zeta-ai",
+    "scatterlab",
+    "api",
+    "wrapper",
+    "unofficial",
+    "chat",
+    "sse",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Natural Language :: Japanese",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = ["requests>=2.28"]
+
+[project.optional-dependencies]
+dev = ["build>=1.2", "twine>=5.0"]
+
+[project.urls]
+Homepage = "https://github.com/amane1201/zetapi"
+Source = "https://github.com/amane1201/zetapi"
+Issues = "https://github.com/amane1201/zetapi/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "zetapi.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["zetapi*"]
+
+[tool.setuptools.package-data]
+zetapi = ["py.typed"]
