@@ -10,15 +10,19 @@ Android アプリ 3.42.4 の Hermes バンドルから復元した 332 エンド
 ...     print(event)
 """
 
+from .api.auth import OAUTH_CLIENTS, authorize_url
 from .client import (
     APPLICATION_VERSION,
     BASE_URL,
     CREATOR_ASSISTANT_URL,
     IMAGE_URL,
     ISSUERS,
+    LANGUAGES,
+    WEB_APPLICATION_VERSION,
     WEB_URL,
     RawAPI,
     ZetaClient,
+    normalize_language,
 )
 from .endpoints import ENDPOINTS, Endpoint
 from .exceptions import (
@@ -29,7 +33,7 @@ from .exceptions import (
     ZetaTokenError,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "APPLICATION_VERSION",
@@ -38,6 +42,9 @@ __all__ = [
     "ENDPOINTS",
     "IMAGE_URL",
     "ISSUERS",
+    "LANGUAGES",
+    "OAUTH_CLIENTS",
+    "WEB_APPLICATION_VERSION",
     "WEB_URL",
     "Endpoint",
     "RawAPI",
@@ -48,4 +55,6 @@ __all__ = [
     "ZetaRateLimitError",
     "ZetaTokenError",
     "__version__",
+    "authorize_url",
+    "normalize_language",
 ]

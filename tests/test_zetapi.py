@@ -106,7 +106,13 @@ h = zeta.headers()
 check("X-Client-Version", h["X-Client-Version"], "3.42.4")
 check("X-Client-Type", h["X-Client-Type"], "app")
 check("X-Device-Type", h["X-Device-Type"], "android")
-check("X-User-Language", h["X-User-Language"], "ja")
+# ja のまま送るとサーバーが 500 を返す。必ず JAPANESE に正規化されること
+check("X-User-Language", h["X-User-Language"], "JAPANESE")
+check("language は正規化される", zeta.language, "JAPANESE")
+check("ko も正規化", ZetaClient(language="ko").language, "KOREAN")
+check("en も正規化", ZetaClient(language="en").language, "ENGLISH")
+check("既に大文字ならそのまま", ZetaClient(language="ENGLISH").language, "ENGLISH")
+check("未知の値は素通し", ZetaClient(language="FRENCH").language, "FRENCH")
 check("X-Sticky は deviceId", h["X-Sticky"], "DEV-1")
 check("Authorization", h["Authorization"], "Bearer AT")
 check("auth=False なら付かない", "Authorization" in zeta.headers(auth=False), False)
@@ -281,10 +287,11 @@ check(
 )
 check("Accept は event-stream", session.calls[0]["headers"]["Accept"], "text/event-stream")
 check("stream=True", session.calls[0]["stream"], True)
+# 入れ子にすると 400 Failed to read HTTP message。フラットが正解
 check(
     "送信ボディ",
     json.loads(session.calls[0]["data"]),
-    {"content": {"type": "TEXT", "text": "やあ"}},
+    {"type": "TEXT", "text": "やあ"},
 )
 check(
     "URL",
@@ -292,15 +299,54 @@ check(
     "https://api.zeta-ai.io/v1/rooms/R1/messages/stream",
 )
 
-session = FakeSession(
-    [
-        FakeStreamResponse(
-            ['data: {"event":"TOKEN","text":"あ"}\n\ndata: {"event":"TOKEN","text":"い"}\n\n']
-        )
-    ]
+# 実サーバーの形。IN_PROGRESS の text は差分ではなく累積で、
+# 最終形は CHAT_COMPLETE の replyMessage に入る
+_CHUNK = 'data:{{"event":"IN_PROGRESS","chunkMessage":{{"contents":[{{"type":"TEXT","text":"{0}"}}]}},"index":null}}'
+_DONE = (
+    'data:{"event":"CHAT_COMPLETE","replyMessage":{"contents":'
+    '[{"type":"TEXT","speakerName":"ナレーター","text":"あいうえお"},'
+    '{"type":"TEXT","speakerName":"蓮","text":"……は？"}]}}'
 )
+_STREAM = "\n\n".join([_CHUNK.format("あ"), _CHUNK.format("あい"), _CHUNK.format("あいう"), _DONE]) + "\n\n"
+
+session = FakeSession([FakeStreamResponse([_STREAM])])
 zeta = ZetaClient(access_token="AT", session=session)
-check("collect でテキスト結合", zeta.chat.collect(zeta.chat.send("R1", "x")), "あい")
+check(
+    "collect は累積を連結しない",
+    zeta.chat.collect(zeta.chat.send("R1", "x")),
+    "あいうえお……は？",
+)
+
+session = FakeSession([FakeStreamResponse([_STREAM])])
+zeta = ZetaClient(access_token="AT", session=session)
+check(
+    "iter_text は差分だけ返す",
+    list(zeta.chat.iter_text(zeta.chat.send("R1", "x"))),
+    ["あ", "い", "う", "えお……は？"],
+)
+
+session = FakeSession([FakeStreamResponse([_CHUNK.format("あい") + "\n\n"])])
+zeta = ZetaClient(access_token="AT", session=session)
+check(
+    "CHAT_COMPLETE が無ければ最後の IN_PROGRESS",
+    zeta.chat.collect(zeta.chat.send("R1", "x")),
+    "あい",
+)
+
+# 最終形が途中経過と食い違っても、全文を出し直さず違う所だけ出す
+_DIVERGE = "\n\n".join(
+    [
+        _CHUNK.format("あいう"),
+        'data:{"event":"CHAT_COMPLETE","replyMessage":{"contents":[{"type":"TEXT","text":"あい\\nえお"}]}}',
+    ]
+) + "\n\n"
+session = FakeSession([FakeStreamResponse([_DIVERGE])])
+zeta = ZetaClient(access_token="AT", session=session)
+check(
+    "食い違っても重複させない",
+    list(zeta.chat.iter_text(zeta.chat.send("R1", "x"))),
+    ["あいう", "\nえお"],
+)
 
 session = FakeSession([FakeStreamResponse(['data: {"event":"ERROR","message":"だめ"}\n\n'])])
 zeta = ZetaClient(access_token="AT", session=session)

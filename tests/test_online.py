@@ -81,12 +81,17 @@ class Report:
             value = fn()
         except ZetaHTTPError as exc:
             ms = int((time.monotonic() - started) * 1000)
+            # 匿名アカウントで実行している時の ANONYMOUS_NOT_ALLOWED は想定内。
+            # 失敗として数えると本物の不具合が埋もれるので分けて扱う
+            expected = exc.code == "ANONYMOUS_NOT_ALLOWED"
             self.rows.append({
-                "label": label, "ok": False, "ms": ms,
+                "label": label, "ok": expected, "expected_block": expected, "ms": ms,
                 "status": exc.status, "code": exc.code,
                 "message": exc.message, "body": _trim(exc.body), "note": note,
             })
-            print(f"  NG  {label}  [{exc.status}] {exc.code or ''} {exc.message or ''}")
+            mark = "--  " if expected else "NG  "
+            suffix = " (匿名では叩けない。想定どおり)" if expected else ""
+            print(f"  {mark}{label}  [{exc.status}] {exc.code or ''} {exc.message or ''}{suffix}")
             return None
         except Exception as exc:  # noqa: BLE001
             ms = int((time.monotonic() - started) * 1000)
@@ -106,8 +111,12 @@ class Report:
         return value
 
     def summary(self) -> tuple[int, int]:
-        ok = sum(1 for r in self.rows if r["ok"])
-        return ok, len(self.rows) - ok
+        ok = sum(1 for r in self.rows if r["ok"] and not r.get("expected_block"))
+        blocked = sum(1 for r in self.rows if r.get("expected_block"))
+        ng = len(self.rows) - ok - blocked
+        if blocked:
+            print(f"（うち {blocked} 件は匿名では叩けないもの。ログインすれば通るはず）")
+        return ok, ng
 
 
 def _trim(value: Any, limit: int = 600) -> Any:
@@ -170,7 +179,7 @@ def test_qs(zeta: ZetaClient, report: Report) -> None:
     print("\n[2] クエリ直列化")
     report.run(
         "配列 (ids=1,2,3 形式)",
-        lambda: zeta.raw.search_plot(params={"query": "猫", "limit": 3}),
+        lambda: zeta.raw.search_plot(params={"keyword": "猫", "limit": 3}),
         note="limit が効いてれば OK",
     )
     report.run(
@@ -256,7 +265,15 @@ def test_write(zeta: ZetaClient, report: Report, plot_id: str) -> None:
         return
     print(f"      → 作成した roomId: {room_id}")
     report.run("rooms.get (作成直後)", lambda: zeta.rooms.get(room_id))
-    probe_chat(zeta, report, room_id)
+    # ボディの形は確定済み。総当たりは --probe-chat の時だけ
+    report.run(
+        "chat.collect(chat.send())",
+        lambda: zeta.chat.collect(zeta.chat.send(room_id, "はじめまして")),
+    )
+    report.run(
+        "chat.iter_text() の差分",
+        lambda: "".join(zeta.chat.iter_text(zeta.chat.send(room_id, "そうなんだ"))),
+    )
     print(f"\n  作ったルーム {room_id} は消してない。要らなければアプリ側で消して")
 
 
@@ -278,11 +295,15 @@ def sweep(zeta: ZetaClient, report: Report, delay: float, limit: int | None) -> 
                                 "sample": _trim(value, 200)})
             print(f"  ok  [{i}/{len(names)}] {name}  {_preview(value)}")
         except ZetaHTTPError as exc:
-            ng += 1
-            report.rows.append({"label": f"sweep {name}", "ok": False,
+            expected = exc.code == "ANONYMOUS_NOT_ALLOWED"
+            if not expected:
+                ng += 1
+            report.rows.append({"label": f"sweep {name}", "ok": expected,
+                                "expected_block": expected,
                                 "status": exc.status, "code": exc.code,
                                 "message": exc.message})
-            print(f"  NG  [{i}/{len(names)}] {name}  [{exc.status}] {exc.code or ''}")
+            mark = "--" if expected else "NG"
+            print(f"  {mark}  [{i}/{len(names)}] {name}  [{exc.status}] {exc.code or ''}")
             if exc.status == 429:
                 rate_limited += 1
                 if rate_limited >= 3:
@@ -345,17 +366,22 @@ def main() -> int:
 
     import os
     token = args.token or os.environ.get("ZETA_ACCESS_TOKEN")
-    if not token:
-        parser.error("--token か ZETA_ACCESS_TOKEN が要る")
+    if token:
+        zeta = ZetaClient(
+            access_token=token,
+            refresh_token=args.refresh or os.environ.get("ZETA_REFRESH_TOKEN"),
+            device_id=args.device_id or os.environ.get("ZETA_DEVICE_ID"),
+            language=args.language,
+        )
+    else:
+        # トークンを渡されなかったら Web から匿名アカウントを1つ貰う。
+        # 毎回新しく生えるので、--write しても自分のアカウントは汚れない。
+        print("トークン未指定 → 匿名アカウントで実行する")
+        zeta = ZetaClient.anonymous(language=args.language)
 
-    zeta = ZetaClient(
-        access_token=token,
-        refresh_token=args.refresh or os.environ.get("ZETA_REFRESH_TOKEN"),
-        device_id=args.device_id or os.environ.get("ZETA_DEVICE_ID"),
-        language=args.language,
-    )
     print(f"接続先: {zeta.base_url}")
     print(f"device_id: {zeta.device_id}")
+    print(f"匿名: {zeta.is_anonymous} / user_id: {zeta.user_id}")
     print(f"送るヘッダ: {json.dumps({k: v for k, v in zeta.headers().items() if k != 'Authorization'}, ensure_ascii=False)}")
 
     report = Report()

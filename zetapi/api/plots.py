@@ -14,12 +14,15 @@ from ._base import Namespace
 class Plots(Namespace):
     """プロットの検索・取得・作成とコメント。"""
 
-    def search(self, query: str, **params: Any) -> Any:
-        """``GET /v1/plots/search``。"""
-        return self._call("search_plot", params={"query": query, **params})
+    def search(self, keyword: str, **params: Any) -> Any:
+        """``GET /v1/plots/search``。クエリ名は ``keyword`` (``query`` は 400)。"""
+        return self._call("search_plot", params={"keyword": keyword, **params})
 
-    def autocomplete(self, query: str, **params: Any) -> Any:
-        return self._call("get_search_autocomplete", params={"query": query, **params})
+    def autocomplete(self, keyword: str, **params: Any) -> Any:
+        """検索補完。ハッシュタグの候補と件数が返る。"""
+        return self._call(
+            "get_search_autocomplete", params={"keyword": keyword, **params}
+        )
 
     def list(self, **params: Any) -> Any:
         return self._call("list_plot", params=params or None)
@@ -29,8 +32,9 @@ class Plots(Namespace):
             "get_plot", path_params={"plotId": plot_id}, params=params or None
         )
 
-    def ranking(self, **params: Any) -> Any:
-        return self._call("list_plot_ranking", params=params or None)
+    def ranking(self, type: str = "DAILY", **params: Any) -> Any:  # noqa: A002
+        """``GET /v1/plots/ranking``。``type`` は必須 (``DAILY`` / ``WEEKLY`` 等)。"""
+        return self._call("list_plot_ranking", params={"type": type, **params})
 
     def similar(self, plot_id: str, **params: Any) -> Any:
         return self._call(

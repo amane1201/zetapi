@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from typing import Any, Iterator
@@ -24,13 +25,63 @@ from .exceptions import (
 BASE_URL = "https://api.zeta-ai.io"
 APPLICATION_VERSION = "3.42.4"
 
+#: Web 版 (zeta-ai.io) の X-Client-Version。アプリ版より新しい
+WEB_APPLICATION_VERSION = "3.44.7"
+
 #: バンドル内 process.env より (production ビルド)
 WEB_URL = "https://zeta-ai.io"
 IMAGE_URL = "https://image.zeta-ai.io"
 CREATOR_ASSISTANT_URL = "https://creator-assistant.zeta-ai.io"
 
-#: /v1/auth/tokens の externalToken.issuer に入る値
-ISSUERS = ("GOOGLE", "APPLE", "KAKAO", "LINE", "FACEBOOK", "EMAIL")
+#: /v1/auth/tokens の externalToken.issuer に入る値。
+#: ``INTERNAL_ACCESS`` は Web の TokenIssuer にのみ、``EMAIL`` はアプリ側にのみあった
+ISSUERS = ("GOOGLE", "APPLE", "KAKAO", "LINE", "FACEBOOK", "EMAIL", "INTERNAL_ACCESS")
+
+#: X-User-Language が取る値。**ここを ``ja`` のような ISO コードにすると
+#: サーバーが 500 を返す**ので、必ずこの形に正規化してから送る。
+LANGUAGES = ("KOREAN", "JAPANESE", "ENGLISH")
+
+_LANGUAGE_ALIASES = {
+    "ja": "JAPANESE",
+    "jp": "JAPANESE",
+    "ja-jp": "JAPANESE",
+    "japan": "JAPANESE",
+    "japanese": "JAPANESE",
+    "ko": "KOREAN",
+    "kr": "KOREAN",
+    "ko-kr": "KOREAN",
+    "korea": "KOREAN",
+    "korean": "KOREAN",
+    "en": "ENGLISH",
+    "en-us": "ENGLISH",
+    "english": "ENGLISH",
+}
+
+#: 匿名トークンを配っている Web のパス (言語ごとに用意されている)
+_WEB_LANGUAGE_PATH = {"JAPANESE": "/ja", "KOREAN": "/ko", "ENGLISH": "/en"}
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+)
+
+
+def normalize_language(value: str) -> str:
+    """``ja`` / ``japanese`` などを API が受け付ける ``JAPANESE`` に直す。
+
+    知らない値はそのまま通す (将来増えた言語を塞がないため)。
+
+    >>> normalize_language("ja")
+    'JAPANESE'
+    >>> normalize_language("JAPANESE")
+    'JAPANESE'
+    """
+    if not value:
+        return value
+    upper = value.upper()
+    if upper in LANGUAGES:
+        return upper
+    return _LANGUAGE_ALIASES.get(value.lower(), value)
 
 
 class ZetaClient:
@@ -96,6 +147,101 @@ class ZetaClient:
         self.creator = Creator(self)
         self.zeta_pass = ZetaPass(self)
         self.raw = RawAPI(self)
+
+    # ------------------------------------------------------------------ 言語
+
+    @property
+    def language(self) -> str:
+        """X-User-Language に載せる値。代入時に自動で正規化される。"""
+        return self._language
+
+    @language.setter
+    def language(self, value: str) -> None:
+        self._language = normalize_language(value)
+
+    # ------------------------------------------------------------------ 匿名ログイン
+
+    @classmethod
+    def anonymous(
+        cls,
+        *,
+        language: str = "ja",
+        web_url: str = WEB_URL,
+        session: requests.Session | None = None,
+        timeout: float = 30.0,
+        **kwargs: Any,
+    ) -> ZetaClient:
+        """ログイン無しで使えるクライアントを作る。
+
+        Web (``zeta-ai.io``) は未ログインの訪問者にも匿名アカウントを 1 つ
+        発行しており、``TOKEN`` / ``REFRESH_TOKEN`` / ``DEVICE_ID`` の 3 つが
+        Set-Cookie で降ってくる。それをそのまま使う。
+
+        匿名で通るのは閲覧系とルーム作成・チャットまで。コインや
+        スクラップなど所有物が絡む API は ``ANONYMOUS_NOT_ALLOWED`` (401) で
+        弾かれるので、そこまでやりたいなら :meth:`Auth.login_external` が要る。
+
+        >>> zeta = ZetaClient.anonymous(language="ja")
+        >>> zeta.is_anonymous
+        True
+        >>> zeta.plots.ranking(type="DAILY")     # doctest: +SKIP
+        """
+        lang = normalize_language(language)
+        session = session or requests.Session()
+        response = session.get(
+            web_url.rstrip("/") + _WEB_LANGUAGE_PATH.get(lang, "/en"),
+            headers={"User-Agent": _BROWSER_UA},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+
+        access = response.cookies.get("TOKEN")
+        refresh = response.cookies.get("REFRESH_TOKEN")
+        device = response.cookies.get("DEVICE_ID")
+        if not access:
+            raise ZetaTokenError(
+                f"{web_url} が匿名トークンを返さなかった "
+                f"(status={response.status_code}, cookies={list(response.cookies.keys())})"
+            )
+
+        kwargs.setdefault("client_type", "web")
+        kwargs.setdefault("device_type", "pc_web")
+        kwargs.setdefault("native_version", WEB_APPLICATION_VERSION)
+        return cls(
+            access_token=access,
+            refresh_token=refresh,
+            device_id=device,
+            language=lang,
+            session=session,
+            timeout=timeout,
+            **kwargs,
+        )
+
+    @property
+    def token_claims(self) -> dict[str, Any]:
+        """アクセストークン (JWT) の中身を読む。API を叩かずに分かる情報。
+
+        ``uid`` (ユーザー ID) / ``did`` (デバイス ID) / ``ano`` (匿名か) /
+        ``cty`` (言語) / ``tz`` (タイムゾーン) / ``exp`` (失効時刻) が入っている。
+        """
+        if not self.access_token:
+            return {}
+        try:
+            payload = self.access_token.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            return json.loads(base64.urlsafe_b64decode(payload))
+        except (IndexError, ValueError):
+            return {}
+
+    @property
+    def is_anonymous(self) -> bool:
+        """匿名アカウントのトークンか。"""
+        return bool(self.token_claims.get("ano"))
+
+    @property
+    def user_id(self) -> str | None:
+        """トークンに埋まっているユーザー ID。"""
+        return self.token_claims.get("uid")
 
     # ------------------------------------------------------------------ 低レベル
 
